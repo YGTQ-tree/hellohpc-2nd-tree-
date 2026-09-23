@@ -228,7 +228,7 @@ class Policy:
                 runtime = self._mean_runtime[task.task_type]
                 duration = (setup + runtime) * ratio
                 if (
-                    (task_type.setup_work + runtime) * ratio > 1.0 * best_finish
+                    (task_type.setup_work + runtime) * ratio > 1.15 * best_finish
                     and (observation.active_attempts or placed)
                 ):
                     continue
