@@ -7,6 +7,7 @@
 #include <string>
 #include <cmath>
 #include <new>
+#include <vector>
 using namespace std;
 
 #include "misc.h"
@@ -17,6 +18,85 @@ using namespace std;
 
 namespace
 {
+struct InterpGeometryCache
+{
+  Patch *patch;
+  int npoints;
+  int order;
+  int symmetry;
+  vector<double> coordinates;
+  vector<Block *> owners;
+  vector<int> bases;
+  vector<double> weights;
+};
+
+void build_interpolation_geometry(Block *block, const double *point,
+                                  int order, int symmetry,
+                                  int *base, double *weights)
+{
+  double offset[3], spacing[3];
+  int cmin[3] = {1, 1, 1};
+  for (int axis = 0; axis < 3; axis++)
+  {
+    spacing[axis] = block->X[axis][1] - block->X[axis][0];
+    int center = static_cast<int>((point[axis] - block->X[axis][0]) / spacing[axis] + 0.4) + 1;
+    base[axis] = center - order / 2 + 1;
+    if (axis == 2 && (symmetry == 1 || symmetry == 2) && fabs(block->X[axis][0]) < spacing[axis])
+      cmin[axis] = -order / 2 + 1;
+    if (axis < 2 && symmetry == 2 && fabs(block->X[axis][0]) < spacing[axis])
+      cmin[axis] = -order / 2 + 1;
+    if (base[axis] < cmin[axis])
+      base[axis] = cmin[axis];
+    if (base[axis] + order - 1 > block->shape[axis])
+      base[axis] = block->shape[axis] + 1 - order;
+    if (base[axis] > 0)
+      offset[axis] = (point[axis] - block->X[axis][base[axis] - 1]) / spacing[axis];
+    else
+      offset[axis] = (point[axis] + block->X[axis][-base[axis]]) / spacing[axis];
+  }
+
+  for (int axis = 0; axis < 3; axis++)
+    for (int i = 0; i < order; i++)
+    {
+      double weight = 1.0;
+      for (int j = 0; j < order; j++)
+        if (j != i)
+          weight *= (offset[axis] - j) / (i - j);
+      weights[axis * order + i] = weight;
+    }
+}
+
+void interpolate_pair_fast(Block *block, double *f1, double *f2,
+                           const int *base, const double *weights, int order,
+                           const double *soa1, const double *soa2,
+                           double &out1, double &out2)
+{
+  if (order > 16 || order < 1)
+    return;
+
+  out1 = 0.0;
+  out2 = 0.0;
+  for (int i = 0; i < order; i++)
+    for (int j = 0; j < order; j++)
+      for (int k = 0; k < order; k++)
+      {
+        int index[3] = {base[0] + i, base[1] + j, base[2] + k};
+        double parity1 = 1.0, parity2 = 1.0;
+        for (int axis = 0; axis < 3; axis++)
+          if (index[axis] <= 0)
+          {
+            index[axis] = 1 - index[axis];
+            parity1 *= soa1[axis];
+            parity2 *= soa2[axis];
+          }
+        size_t source = (static_cast<size_t>(index[2] - 1) * block->shape[1] +
+                         (index[1] - 1)) * block->shape[0] + (index[0] - 1);
+        double weight = weights[i] * weights[order + j] * weights[2 * order + k];
+        out1 += weight * (f1[source] * parity1);
+        out2 += weight * (f2[source] * parity2);
+      }
+}
+
 int surface_interpolation_order()
 {
   map<string, int>::iterator iter = parameters::int_par.find("surface interpolation order");
@@ -350,7 +430,7 @@ void Patch::checkPatch(bool buflog, const int out_rank)
 }
 void Patch::Interp_Points(MyList<var> *VarList,
                           int NN, double **XX,
-                          double *Shellf, int Symmetry)
+                          double *Shellf, int Symmetry, bool cache_geometry)
 {
   // NOTE: we do not Synchnize variables here, make sure of that before calling this routine
   int myrank;
@@ -385,6 +465,51 @@ void Patch::Interp_Points(MyList<var> *VarList,
   llb = new double[dim];
   uub = new double[dim];
 
+  static vector<InterpGeometryCache> geometry_cache;
+  int cache_index = -1;
+  bool cache_hit = false;
+  if (cache_geometry)
+  {
+    for (size_t entry = 0; entry < geometry_cache.size(); entry++)
+    {
+      InterpGeometryCache &candidate = geometry_cache[entry];
+      if (candidate.patch != this || candidate.npoints != NN ||
+          candidate.order != ordn || candidate.symmetry != Symmetry)
+        continue;
+      bool same = true;
+      for (int j = 0; j < NN && same; j++)
+        for (int i = 0; i < dim; i++)
+          if (candidate.coordinates[j * dim + i] != XX[i][j])
+          {
+            same = false;
+            break;
+          }
+      if (same)
+      {
+        cache_index = static_cast<int>(entry);
+        cache_hit = true;
+        break;
+      }
+    }
+    if (!cache_hit)
+    {
+      InterpGeometryCache entry;
+      entry.patch = this;
+      entry.npoints = NN;
+      entry.order = ordn;
+      entry.symmetry = Symmetry;
+      entry.coordinates.resize(NN * dim);
+      entry.owners.resize(NN, 0);
+      entry.bases.resize(NN * dim, 0);
+      entry.weights.resize(NN * dim * ordn, 0.0);
+      for (int j = 0; j < NN; j++)
+        for (int i = 0; i < dim; i++)
+          entry.coordinates[j * dim + i] = XX[i][j];
+      geometry_cache.push_back(entry);
+      cache_index = static_cast<int>(geometry_cache.size()) - 1;
+    }
+  }
+
   for (int j = 0; j < NN; j++) // run along points
   {
     double pox[dim];
@@ -404,6 +529,39 @@ void Patch::Interp_Points(MyList<var> *VarList,
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
       }
+    }
+
+    if (cache_hit)
+    {
+      Block *BP = geometry_cache[cache_index].owners[j];
+      if (BP && myrank == BP->rank)
+      {
+        if (num_var == 2 && ordn <= 16)
+        {
+          varl = VarList;
+          var *first = varl->data;
+          var *second = varl->next->data;
+          const int *base = &geometry_cache[cache_index].bases[j * dim];
+          const double *weights = &geometry_cache[cache_index].weights[j * dim * ordn];
+          interpolate_pair_fast(BP, BP->fgfs[first->sgfn], BP->fgfs[second->sgfn],
+                                base, weights, ordn, first->SoA, second->SoA,
+                                shellf[j * num_var], shellf[j * num_var + 1]);
+        }
+        else
+        {
+          varl = VarList;
+          int k = 0;
+          while (varl)
+          {
+            f_global_interp(BP->shape, BP->X[0], BP->X[1], BP->X[2], BP->fgfs[varl->data->sgfn], shellf[j * num_var + k],
+                            pox[0], pox[1], pox[2], ordn, varl->data->SoA, Symmetry);
+            varl = varl->next;
+            k++;
+          }
+        }
+        weight[j] = 1;
+      }
+      continue;
     }
 
     MyList<Block> *Bp = blb;
@@ -445,6 +603,14 @@ void Patch::Interp_Points(MyList<var> *VarList,
       if (flag)
       {
         notfind = false;
+        if (cache_geometry)
+        {
+          geometry_cache[cache_index].owners[j] = BP;
+          if (myrank == BP->rank)
+            build_interpolation_geometry(BP, pox, ordn, Symmetry,
+                                         &geometry_cache[cache_index].bases[j * dim],
+                                         &geometry_cache[cache_index].weights[j * dim * ordn]);
+        }
         if (myrank == BP->rank)
         {
           //---> interpolation

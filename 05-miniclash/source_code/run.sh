@@ -22,6 +22,9 @@ fi
 
 status=0
 n=0
+running=0
+workers=$(nproc 2>/dev/null || printf '1')
+base_seed=$(date +%s)
 
 # Fields are space-separated: <input_file> <output_file1> <output_file2>.
 while read -r infile out1 out2 rest; do
@@ -34,16 +37,30 @@ while read -r infile out1 out2 rest; do
 		continue
 	fi
 
-	# -q quiets the per-collision banner, -p sets the prefix file (which is also
-	# copied into both outputs), -o names the two outputs and must come last.
-	if ! "$BIN" -q -p "$infile" -o "$out1" "$out2" >/dev/null; then
-		echo "$0: failed on $infile" >&2
-		status=1
-		continue
-	fi
-
+	# Give simultaneous searches distinct, nonzero xorshift states.
+	seed1=$(((base_seed + n * 2654435761 + $$) & 4294967295))
+	seed2=$(((base_seed * 2246822519 + n * 3266489917 + $$) & 4294967295))
+	[ "$seed1" -ne 0 ] || seed1=1
+	[ "$seed2" -ne 0 ] || seed2=1
+	"$BIN" -q --seed1 "$seed1" --seed2 "$seed2" -p "$infile" -o "$out1" "$out2" >/dev/null &
 	n=$((n + 1))
+	running=$((running + 1))
+	if [ "$running" -ge "$workers" ]; then
+		if ! wait -n; then
+			echo "$0: a collision task failed" >&2
+			status=1
+		fi
+		running=$((running - 1))
+	fi
 done < "$TASKS"
+
+while [ "$running" -gt 0 ]; do
+	if ! wait -n; then
+		echo "$0: a collision task failed" >&2
+		status=1
+	fi
+	running=$((running - 1))
+done
 
 echo "$0: generated $n collisions"
 exit "$status"

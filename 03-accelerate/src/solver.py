@@ -32,21 +32,22 @@ void compute_field_kernel(
         const float *point = points + (size_t)q * dimension;
         double total = 0.0;
 
+        #pragma omp simd reduction(+:total)
         for (int c = 0; c < c_count; ++c) {
             const float *center = centers + (size_t)c * dimension;
             const float *direction = trig_vec + (size_t)c * dimension;
-            double square_distance = 0.0;
-            double dot_product = 0.0;
+            float square_distance = 0.0f;
+            float dot_product = 0.0f;
 
             for (int d = 0; d < dimension; ++d) {
-                const double x = point[d];
-                const double delta = x - (double)center[d];
+                const float x = point[d];
+                const float delta = x - center[d];
                 square_distance += delta * delta;
-                dot_product += x * (double)direction[d];
+                dot_product += x * direction[d];
             }
 
-            total += (double)weights[c] * exp(-(double)scales[c] * square_distance);
-            total += (double)bias[c] * sin((double)trig_scale[c] * dot_product);
+            total += (double)weights[c] * expf(-scales[c] * square_distance);
+            total += (double)bias[c] * sinf(trig_scale[c] * dot_product);
         }
         output[q] = (float)total;
     }

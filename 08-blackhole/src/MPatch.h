@@ -29,7 +29,7 @@ public:
    void checkBlock();
    void Interp_Points(MyList<var> *VarList,
                       int NN, double **XX,
-                      double *Shellf, int Symmetry);
+                      double *Shellf, int Symmetry, bool cache_geometry = false);
    bool Interp_ONE_Point(MyList<var> *VarList, double *XX,
                          double *Shellf, int Symmetry);
    double getdX(int dir);

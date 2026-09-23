@@ -36,7 +36,9 @@ using namespace std;
 //| Constructor
 //|============================================================================
 
-surface_integral::surface_integral(int iSymmetry) : Symmetry(iSymmetry)
+surface_integral::surface_integral(int iSymmetry) : Symmetry(iSymmetry),
+  theta_basis(0), phi_cos_basis(0), phi_sin_basis(0),
+  basis_spinw(-1), basis_maxl(-1), basis_modes(-1)
 {
   MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
   MPI_Comm_size(MPI_COMM_WORLD, &cpusize);
@@ -186,6 +188,9 @@ surface_integral::~surface_integral()
   delete[] ny_g;
   delete[] nz_g;
   delete[] arcostheta;
+  delete[] theta_basis;
+  delete[] phi_cos_basis;
+  delete[] phi_sin_basis;
 #ifdef GaussInt
   delete[] wtcostheta;
 #endif
@@ -230,7 +235,7 @@ void surface_integral::surf_Wave(double rex, int lev, cgh *GH, var *Rpsi4, var *
   double *shellf;
   shellf = new double[n_tot * InList];
 
-  GH->PatL[lev]->data->Interp_Points(DG_List, n_tot, pox, shellf, Symmetry);
+  GH->PatL[lev]->data->Interp_Points(DG_List, n_tot, pox, shellf, Symmetry, true);
 
   int mp, Lp, Nmin, Nmax;
 
@@ -246,6 +251,53 @@ void surface_integral::surf_Wave(double rex, int lev, cgh *GH, var *Rpsi4, var *
   {
     Nmin = myrank * mp + Lp;
     Nmax = Nmin + mp - 1;
+  }
+
+  int lpsy = (Symmetry == 0) ? 1 : ((Symmetry == 1) ? 2 : 8);
+  if (basis_spinw != spinw || basis_maxl != maxl || basis_modes != NN)
+  {
+    delete[] theta_basis;
+    delete[] phi_cos_basis;
+    delete[] phi_sin_basis;
+    theta_basis = new double[lpsy * NN * N_theta];
+    phi_cos_basis = new double[lpsy * NN * N_phi];
+    phi_sin_basis = new double[lpsy * NN * N_phi];
+
+    int mode = 0;
+    for (int pl = spinw; pl < maxl + 1; pl++)
+      for (int pm = -pl; pm < pl + 1; pm++, mode++)
+      {
+        for (int lp = 0; lp < lpsy; lp++)
+        {
+          for (int i = 0; i < N_theta; i++)
+          {
+            double costheta = (lp % 2 == 0) ? arcostheta[i] : -arcostheta[i];
+            theta_basis[(lp * N_theta + i) * NN + mode] =
+              sqrt((2 * pl + 1.0) / 4.0 / PI) *
+              misc::Wigner_d_function(pl, pm, spinw, costheta);
+          }
+          for (int j = 0; j < N_phi; j++)
+          {
+            double phase;
+            if (lp < 4)
+              phase = pm * (j + 0.5) * dphi;
+            else if (lp < 6)
+              phase = pm * (PI - (j + 0.5) * dphi);
+            else
+              phase = pm * (PI + (j + 0.5) * dphi);
+            double c = cos(phase);
+            double s = sin(phase);
+            if (lp == 2 || lp == 3)
+              s = -s;
+            int index = (lp * N_phi + j) * NN + mode;
+            phi_cos_basis[index] = c;
+            phi_sin_basis[index] = s;
+          }
+        }
+      }
+    basis_spinw = spinw;
+    basis_maxl = maxl;
+    basis_modes = NN;
   }
 
   //|~~~~~> Integrate the dot product of Dphi with the surface normal.
@@ -264,14 +316,6 @@ void surface_integral::surf_Wave(double rex, int lev, cgh *GH, var *Rpsi4, var *
   double cosmphi, sinmphi;
 
   int i, j;
-  int lpsy = 0;
-  if (Symmetry == 0)
-    lpsy = 1;
-  else if (Symmetry == 1)
-    lpsy = 2;
-  else if (Symmetry == 2)
-    lpsy = 8;
-
   double psi4RR, psi4II;
   for (n = Nmin; n <= Nmax; n++)
   {
@@ -285,66 +329,68 @@ void surface_integral::surf_Wave(double rex, int lev, cgh *GH, var *Rpsi4, var *
       {
         for (int lp = 0; lp < lpsy; lp++)
         {
+          int theta_index = (lp * N_theta + i) * NN + countlm;
+          int phi_index = (lp * N_phi + j) * NN + countlm;
           switch (lp)
           {
           case 0: //+++ (theta, phi)
             costheta = arcostheta[i];
-            cosmphi = cos(pm * (j + 0.5) * dphi);
-            sinmphi = sin(pm * (j + 0.5) * dphi);
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = shellf[InList * n];
             psi4II = shellf[InList * n + 1];
             break;
           case 1: //++- (pi-theta, phi)
             costheta = -arcostheta[i];
-            cosmphi = cos(pm * (j + 0.5) * dphi);
-            sinmphi = sin(pm * (j + 0.5) * dphi);
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[2] * shellf[InList * n];
             psi4II = Ipsi4->SoA[2] * shellf[InList * n + 1];
             break;
           case 2: //+-+ (theta, 2*pi-phi)
             costheta = arcostheta[i];
-            cosmphi = cos(pm * (j + 0.5) * dphi);
-            sinmphi = -sin(pm * (j + 0.5) * dphi);
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[1] * shellf[InList * n];
             psi4II = Ipsi4->SoA[1] * shellf[InList * n + 1];
             break;
           case 3: //+-- (pi-theta, 2*pi-phi)
             costheta = -arcostheta[i];
-            cosmphi = cos(pm * (j + 0.5) * dphi);
-            sinmphi = -sin(pm * (j + 0.5) * dphi);
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[2] * Rpsi4->SoA[1] * shellf[InList * n];
             psi4II = Ipsi4->SoA[2] * Ipsi4->SoA[1] * shellf[InList * n + 1];
             break;
           case 4: //-++ (theta, pi-phi)
             costheta = arcostheta[i];
-            cosmphi = cos(pm * (PI - (j + 0.5) * dphi));
-            sinmphi = sin(pm * (PI - (j + 0.5) * dphi));
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[0] * shellf[InList * n];
             psi4II = Ipsi4->SoA[0] * shellf[InList * n + 1];
             break;
           case 5: //-+- (pi-theta, pi-phi)
             costheta = -arcostheta[i];
-            cosmphi = cos(pm * (PI - (j + 0.5) * dphi));
-            sinmphi = sin(pm * (PI - (j + 0.5) * dphi));
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[2] * Rpsi4->SoA[0] * shellf[InList * n];
             psi4II = Ipsi4->SoA[2] * Ipsi4->SoA[0] * shellf[InList * n + 1];
             break;
           case 6: //--+ (theta, pi+phi)
             costheta = arcostheta[i];
-            cosmphi = cos(pm * (PI + (j + 0.5) * dphi));
-            sinmphi = sin(pm * (PI + (j + 0.5) * dphi));
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[1] * Rpsi4->SoA[0] * shellf[InList * n];
             psi4II = Ipsi4->SoA[1] * Ipsi4->SoA[0] * shellf[InList * n + 1];
             break;
           case 7: //--- (pi-theta, pi+phi)
             costheta = -arcostheta[i];
-            cosmphi = cos(pm * (PI + (j + 0.5) * dphi));
-            sinmphi = sin(pm * (PI + (j + 0.5) * dphi));
+            cosmphi = phi_cos_basis[phi_index];
+            sinmphi = phi_sin_basis[phi_index];
             psi4RR = Rpsi4->SoA[2] * Rpsi4->SoA[1] * Rpsi4->SoA[0] * shellf[InList * n];
             psi4II = Ipsi4->SoA[2] * Ipsi4->SoA[1] * Ipsi4->SoA[0] * shellf[InList * n + 1];
           }
 
-          thetap = sqrt((2 * pl + 1.0) / 4.0 / PI) * misc::Wigner_d_function(pl, pm, spinw, costheta); // note the variation from -2 to 2
+          thetap = theta_basis[theta_index];
 #ifdef GaussInt
           // wtcostheta is even function respect costheta
           RP_out[countlm] = RP_out[countlm] + thetap * (psi4RR * cosmphi + psi4II * sinmphi) * wtcostheta[i];

@@ -36,6 +36,8 @@ private:
 
 	double *nx_g, *ny_g, *nz_g; // global list of unit normals
 	int myrank, cpusize;
+	double *theta_basis, *phi_cos_basis, *phi_sin_basis;
+	int basis_spinw, basis_maxl, basis_modes;
 
 public:
 	surface_integral(int iSymmetry);
