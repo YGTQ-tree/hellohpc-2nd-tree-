@@ -1,27 +1,33 @@
 # Author Solution
 
-The author implementation uses contiguous transfers of `x`, centered FP32
-moment accumulation, the native `Rsqrt` operation, and score normalizers shared
-with `logsumexp`. Multiple shape-driven TilingKeys support runtime-balanced
-complete segments, width-specialized short groups, low-`S` row splits,
-power-law partial tasks, and saturated medium-length workloads. The
-implementation reads segment lengths on the device, although the formal Host
-interface also permits generic planning from `offsets`.
+当前实现（详见仓库根目录 `README.md` 的算子定义与 `STATUS.md` 的实测状态）按
+**chunk 流式**处理每个分段，核心思路：
 
-For short segments, the implementation uses compensated normalized weighted
-sums, refines the mean with a compensated residual pass, and then computes the
-variance around the final FP32 mean. This prevents small terms from being lost
-when opposite-signed FP16 extrema cancel. The generic direct path applies the
-same stable recomputation when the mean or shift exceeds 32 standard deviations,
-where moment subtraction becomes ill-conditioned. Partial merges apply the
-same scale check and stable recomputation. Compact balanced kernels reserve an
-additional 1 KiB of local scratch; the global workspace size is unchanged.
-The current reference evaluates all mathematics in FP64 and rounds only final
-outputs under precision contract v2. Variance uses the final FP32 mean;
-acceptance is determined by the official v2 tests rather than by reproducing
-the reference rounding order.
+1. **按 chunk 向量化，不做逐行标量**
+   每个 chunk 一次处理 `kChunkRows = 24` 行：整块 `Adds(score, -m)` 之后整块 `Exp`，
+   得到 `R x D` 的权重分块；再用矩阵式的列方向累加
+   `mean += sum_rows x_row * exp_row` 把段内的行折进同一个 `D` 宽累加器。
+   原始实现每行都要 `GetValue()` 取标量权重再驱动一次 `D` 宽向量运算，
+   向量单元的启动开销是长段的主要瓶颈。
 
-Public timing measurements are diagnostic only and do not constitute a formal
-score that includes hidden cases. Run the public workflow from the repository
-root after each change and use the reported performance value for local
-comparison.
+2. **Global Memory 读取遍数固定**
+   - Pass 1：段内最大值（只读 score，比 x 小 `D` 倍）；
+   - Pass 2：累加 normalizer 与加权和（读 x）；
+   - Pass 3：围绕最终均值累加中心化二阶矩（读 x）。
+   段长 1 行到 16384 行走同一条路径，不存在“段太长就退化”的分支。
+
+3. **数值稳定性**
+   - `exp` 自变量先减段内最大值，结果 <= 0，任何 chunk 的 `exp` 之和都落在
+     `[1, rows]`，不会在 float32 上溢；极小权重自然下溢为 0，与 FP64 参考一致。
+   - 加权和用补偿求和（Kahan 的“把丢掉的低位补回去”形式），覆盖
+     `±65504` 互相抵消的场景。
+   - 方差围绕**已经算出的 float32 均值**中心化后累加，而不是 `E[x^2] - mean^2`，
+     因此“大均值 + 小方差”不会灾难性抵消，常量列得到严格 0 方差。
+   - `rstd` 用硬件 `Rsqrt`；`logsumexp = Ln(N) + m`，避免 `N` 上溢。
+
+4. **缓冲区容量的两条铁律**（早期版本在这里踩过坑，代码里也写了注释）
+   - 以“行号 × 行宽”索引的缓冲，容量必须 >= `kChunkRows * row_stride_`；
+   - 一次会写入 `d_` 个元素的缓冲，容量必须 >= `kMaxD`。
+
+本地自测分数仅供参考：公开性能集只有一个用例覆盖每类工作负载，
+且不包含隐藏用例；请以 OJ 评测分数为准。
