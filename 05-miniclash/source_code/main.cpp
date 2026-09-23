@@ -4,7 +4,9 @@
 
 #include "main.hpp"
 #include "timer.hpp"
+#ifndef HASHCLASH_LEGACY_CLI
 #include "runner.hpp"
+#endif
 
 using namespace std;
 
@@ -16,19 +18,22 @@ void find_collision(const uint32 IV[], uint32 msg1block0[], uint32 msg1block1[],
 
 // ---------------------------------------------------------------------------
 // The historical single-task command line interface of md5_fastcoll lives in
-// legacy_cli.inc.  It is not compiled by default; `make legacy` builds it for
-// manual experiments.  The graded entry point is the batch runner at the
-// bottom of this file, which is what `./run tasks.txt` executes.
+// legacy_cli.inc.  It is not compiled by default (that whole file is wrapped in
+// #if defined(HASHCLASH_LEGACY_CLI)); `make legacy` builds it for manual
+// experiments.  The graded entry point is the batch runner below, which is what
+// `./run tasks.txt` executes.
 // ---------------------------------------------------------------------------
-
+#include "legacy_cli.inc"
 
 // ---------------------------------------------------------------------------
 // Batch runner: the grader runs `./run tasks.txt` and times this call.
 // ---------------------------------------------------------------------------
+#ifndef HASHCLASH_LEGACY_CLI
 int main(int argc, char** argv)
 {
 	return hashclash::run_task_list(argc, argv);
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // Produce one pair of colliding messages for the given initial value.

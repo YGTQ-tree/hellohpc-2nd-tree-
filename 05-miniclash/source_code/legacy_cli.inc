@@ -1,5 +1,17 @@
 #if defined(HASHCLASH_LEGACY_CLI)
 
+// Headers only needed by this file; the batch runner does not include it.
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+#include <stdexcept>
+#include <stdint.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <errno.h>
+#include <sys/stat.h>
+
 typedef ::uint64_t uint64;
 
 namespace {
@@ -214,6 +226,9 @@ void test_md5iv(bool single = false);
 void test_rndiv(bool single = false);
 void test_reciv(bool single = false);
 void test_all();
+
+unsigned load_block(istream& i, uint32 block[]);
+void save_block(ostream& o, const uint32 block[]);
 
 int main(int argc, char** argv)
 {
@@ -477,7 +492,6 @@ void test_all()
 	}
 }
 
-#endif
 
 
 unsigned load_block(istream& i, uint32 block[])
@@ -506,5 +520,6 @@ void save_block(ostream& o, const uint32 block[])
 		for (unsigned c = 0; c < 4; ++c)
 			o << (unsigned char)((block[k] >> (c*8))&0xFF);
 }
+
 
 #endif // HASHCLASH_LEGACY_CLI

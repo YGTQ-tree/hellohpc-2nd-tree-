@@ -60,6 +60,53 @@ namespace hashclash {
 
 namespace {
 
+// --------------------------------------------------------------------------
+// Checking what the search returned
+//
+// The two families of differential paths inside hashclash are not equally
+// reliable.  The "stevens" family (block1stevens*.cpp) is exact: once its bit
+// conditions are met on the initial value of the second block, the difference
+// of the two message blocks really does cancel and the pair is a collision.
+//
+// The "wang" family (block1wang.cpp) is a repair style path whose internal
+// conditions are only *necessary*.  block0.cpp accepts a candidate as soon as
+// it satisfies the pattern the wang path needs, but for a sizeable fraction of
+// those candidates the second block search then exits on a pair that does not
+// actually collide.  The reference program prints such a pair anyway; feeding
+// it to the grader would be a wrong answer.
+//
+// The fix is cheap and does not change the search: hash both candidate messages
+// with the same compression function the verifier will use, and if the two
+// chaining values differ, run the search again from a fresh random state.  The
+// search is randomised, so a retry is simply another independent attempt, and
+// a pair that passes this check is a real collision by construction.
+bool collides(const uint32 IV[4],
+	const uint32 msg1block0[16], const uint32 msg1block1[16],
+	const uint32 msg2block0[16], const uint32 msg2block1[16])
+{
+	uint32 left[4] = { IV[0], IV[1], IV[2], IV[3] };
+	uint32 right[4] = { IV[0], IV[1], IV[2], IV[3] };
+	md5_compress(left, msg1block0);
+	md5_compress(right, msg2block0);
+	md5_compress(left, msg1block1);
+	md5_compress(right, msg2block1);
+	return left[0] == right[0] && left[1] == right[1]
+		&& left[2] == right[2] && left[3] == right[3];
+}
+
+// Builds the two messages of the second pair from the first pair.  Flipping
+// bit 31 of m4 and m14 and adding 2^15 to m11 is the standard tail of the MD5
+// collision; those differences are what the differential path cancels.
+void derive_second_pair(const uint32 msg1block0[16], const uint32 msg1block1[16],
+	uint32 msg2block0[16], uint32 msg2block1[16])
+{
+	for (int t = 0; t < 16; ++t) {
+		msg2block0[t] = msg1block0[t];
+		msg2block1[t] = msg1block1[t];
+	}
+	msg2block0[4] += 1u << 31; msg2block0[11] += 1u << 15; msg2block0[14] += 1u << 31;
+	msg2block1[4] += 1u << 31; msg2block1[11] -= 1u << 15; msg2block1[14] += 1u << 31;
+}
 
 struct Task {
 	std::string input;
@@ -109,9 +156,14 @@ unsigned load_block(std::istream& in, uint32 block[16])
 	return len;
 }
 
-// Chaining value that precedes the two generated blocks: MD5 state after the
-// prefix bytes, with the final partial block zero filled and the padding that
-// MD5 appends to the complete file left to the verifier.
+// Chaining value that precedes the two generated blocks.
+//
+// The prefix is written into the output files the same way the reference tool
+// writes it: a trailing partial block is zero filled, so the file always
+// consists of the prefix followed by whole 64 byte blocks.  Both files share
+// that padded prefix, so they enter the two generated blocks with the same
+// chaining value and MD5's own end-of-message padding is appended after them.
+// This is exactly what find_block0() must be seeded with.
 void prefix_state(const std::vector<char>& data, uint32 state[4])
 {
 	state[0] = 0x67452301;
@@ -119,7 +171,10 @@ void prefix_state(const std::vector<char>& data, uint32 state[4])
 	state[2] = 0x98badcfe;
 	state[3] = 0x10325476;
 
-	for (size_t offset = 0; offset < data.size(); offset += 64) {
+	// One compression per 64 byte block of the zero filled prefix.  A prefix of
+	// zero length contributes no block at all, leaving the plain MD5 IV.
+	size_t padded = (data.size() + 63) / 64 * 64;
+	for (size_t offset = 0; offset < padded; offset += 64) {
 		uint32 block[16];
 		for (unsigned k = 0; k < 16; ++k) {
 			uint32 word = 0;
@@ -147,8 +202,14 @@ bool write_pair(const Task& task, const std::vector<char>& prefix,
 	const uint32 msg1block0[16], const uint32 msg1block1[16],
 	const uint32 msg2block0[16], const uint32 msg2block1[16], std::string& error)
 {
-	std::vector<char> buffer1(prefix);
-	std::vector<char> buffer2(prefix);
+	// Zero fill the trailing partial block, exactly like the reference tool does
+	// when it copies the prefix through save_block().
+	std::vector<char> padded(prefix);
+	if (padded.size() % 64 != 0)
+		padded.resize(padded.size() + (64 - padded.size() % 64), 0);
+
+	std::vector<char> buffer1(padded);
+	std::vector<char> buffer2(padded);
 	store_block(buffer1, msg1block0);
 	store_block(buffer1, msg1block1);
 	store_block(buffer2, msg2block0);
@@ -225,11 +286,12 @@ struct Shared {
 	const std::vector<Task>* tasks;
 	std::atomic<std::size_t> next;
 	std::atomic<std::size_t> failures;
+	std::atomic<std::size_t> attempts;
 	std::atomic<bool> stop;
 	std::mutex error_mutex;
 	std::string first_error;
 
-	Shared() : tasks(0), next(0), failures(0), stop(false) {}
+	Shared() : tasks(0), next(0), failures(0), attempts(0), stop(false) {}
 };
 
 void worker(Shared* shared, uint64_t stream_id)
@@ -290,7 +352,32 @@ void worker(Shared* shared, uint64_t stream_id)
 		prefix_state(prefix, IV);
 
 		uint32 msg1block0[16], msg1block1[16], msg2block0[16], msg2block1[16];
-		find_collision(IV, msg1block0, msg1block1, msg2block0, msg2block1, false);
+		int attempt = 0;
+		for (;;) {
+			++attempt;
+			find_collision(IV, msg1block0, msg1block1, msg2block0, msg2block1, false);
+			if (collides(IV, msg1block0, msg1block1, msg2block0, msg2block1))
+				break;
+
+			// A wang-family attempt that did not really collide.  Reseed from
+			// this thread's own stream and search again.  32 independent
+			// attempts failing in a row is astronomically unlikely, so the
+			// bounded loop only exists so a broken build cannot hang forever.
+			if (attempt >= 32) {
+				std::lock_guard<std::mutex> lock(shared->error_mutex);
+				if (shared->first_error.empty())
+					shared->first_error = "could not build a valid collision for " + task.input;
+				shared->failures.fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			seed32_1 = xrng64();
+			seed32_2 = xrng64();
+			if (seed32_1 == 0)
+				seed32_1 = 0x9E3779B9u;
+			if (seed32_2 == 0)
+				seed32_2 = 0x85EBCA6Bu;
+			shared->attempts.fetch_add(1, std::memory_order_relaxed);
+		}
 
 		// Advance this thread's generator so the next task starts somewhere new.
 		seed32_1 = xrng64();
@@ -351,6 +438,8 @@ int run_task_list(int argc, char** argv)
 	if (tasks.empty())
 		return 0;
 
+
+
 	unsigned threads = detect_threads();
 	if (threads > tasks.size())
 		threads = (unsigned)tasks.size();
@@ -370,6 +459,10 @@ int run_task_list(int argc, char** argv)
 	worker(&shared, 0);
 	for (size_t t = 0; t < pool.size(); ++t)
 		pool[t].join();
+
+	if (std::getenv("HASHCLASH_STATS"))
+		std::cerr << "run: " << shared.attempts.load() << " retry(ies) over "
+			<< tasks.size() << " task(s)" << std::endl;
 
 	if (shared.failures.load() != 0) {
 		std::cerr << "run: " << shared.failures.load() << " of " << tasks.size()

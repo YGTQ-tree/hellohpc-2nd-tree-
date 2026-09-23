@@ -93,7 +93,16 @@ public:
         pipe_.InitBuffer(mean_buffer_, kMaxD * sizeof(float));
         pipe_.InitBuffer(mean_corr_buffer_, kMaxD * sizeof(float));
         pipe_.InitBuffer(m2_buffer_, kMaxD * sizeof(float));
-        pipe_.InitBuffer(scalar_buffer_, kStrideUnit * sizeof(float));
+        // 归约输出与“单元素标量”都复用这一块，长度按最大 D 分配：
+        // 后面多处调用会一次性写入 d_ 个元素，只给一个 repeat 宽度会越界。
+        pipe_.InitBuffer(scalar_buffer_, kMaxD * sizeof(float));
+
+        // temp_buffer_ 的前 row_stride_ 个元素在 CastPaddedRow 里被当作
+        // “零行”使用，这里先清零一次；后续 AccumulateXw / AccumulateVariance
+        // 每轮都会整体覆写 temp，因此不会影响计算结果。
+        auto zero_row = temp_buffer_.Get<float>();
+        AscendC::Duplicate(zero_row, 0.0f, kMaxD);
+        AscendC::PipeBarrier<PIPE_V>();
     }
 
     // 处理一个分段：算出 mean / rstd / logsumexp 并写回 Global Memory。
@@ -120,21 +129,31 @@ private:
 
     // ---- 数据搬运 ---------------------------------------------------------
 
-    // 把 [begin, begin+rows) 的 score 读进 UB 并转成 float32。
+    // 把 [begin, begin+rows) 的 score 读进 UB 的 score_float_，转成 float32。
+    //
+    // score_half_buffer_ 只有 kMaxLocalRows 个 half，所以这里必须按块搬运：
+    // 一次最多 kMaxLocalRows 行，转换后写到 score_float_[offset .. offset+count)。
+    // 早期版本直接用 rows 作为长度做一次 DataCopyPad，rows > kMaxLocalRows 时
+    // 会越过 UB 缓冲边界，把后续段的 score 读成脏数据（表现为 NaN）。
     __aicore__ inline void LoadScores(uint32_t begin, uint32_t rows)
     {
         auto score_half = score_half_buffer_.Get<half>();
         auto score_float = score_float_buffer_.Get<float>();
-        AscendC::DataCopyPad(score_half, score_gm_[begin],
-            {1, static_cast<uint16_t>(rows * sizeof(half)), 0, 0}, {});
-        AscendC::PipeBarrier<PIPE_ALL>();
-        AscendC::Cast(score_float, score_half, AscendC::RoundMode::CAST_NONE, rows);
-        AscendC::PipeBarrier<PIPE_V>();
+        for (uint32_t base = 0; base < rows; base += kMaxLocalRows) {
+            const uint32_t count = Minimum(kMaxLocalRows, rows - base);
+            AscendC::DataCopyPad(score_half, score_gm_[begin + base],
+                {1, static_cast<uint16_t>(count * sizeof(half)), 0, 0}, {});
+            AscendC::PipeBarrier<PIPE_ALL>();
+            // 同样按 row_stride_ 排版：BuildExpTile 用 row * row_stride_ 定位每一行，
+            // 这里必须写入同一个偏移。
+            AscendC::Cast(score_float[base * row_stride_], score_half,
+                AscendC::RoundMode::CAST_NONE, count);
+            AscendC::PipeBarrier<PIPE_V>();
+        }
     }
 
     // 把 [begin, begin+rows) 的 x 读进 UB 并转成 float32，按 row_stride_ 排版。
-    // 逐行搬运：x 在 GM 里的行距是 d_，UB 里是 row_stride_，两者不一致；
-    // DataCopyPad 会把 [d_, row_stride_) 自动补 0，正好用于后续整块求和。
+    // 逐行搬运：x 在 GM 里的行距是 d_，UB 里是 row_stride_，两者不一致。
     __aicore__ inline void LoadX(uint32_t begin, uint32_t rows)
     {
         auto x_half = x_half_buffer_.Get<half>();
@@ -143,22 +162,56 @@ private:
             AscendC::DataCopyPad(x_half, x_gm_[(begin + row) * d_],
                 {1, static_cast<uint16_t>(d_ * sizeof(half)), 0, 0}, {});
             AscendC::PipeBarrier<PIPE_ALL>();
-            AscendC::Cast(x_float[row * row_stride_], x_half,
-                AscendC::RoundMode::CAST_NONE, d_);
+            CastPaddedRow(x_float, row, x_half);
         }
         AscendC::PipeBarrier<PIPE_V>();
     }
 
+    // 把一行 FP16 转成 FP32 写进 x_float 的第 row 行，并把 [d_, row_stride_)
+    // 这段 padding 明确置 0。
+    //
+    // 为什么必须显式置 0：向量指令按 64 个 float（256 B）为一个 repeat 工作，
+    // 而 D 不一定是 64 的倍数（例如 D=48）。整块 Exp/ReduceSum 会覆盖到
+    // padding，如果不先清零，ReduceSum 会把上一段残留的数据一起加进
+    // normalizer，结果直接错掉。
+    __aicore__ inline void CastPaddedRow(const AscendC::LocalTensor<float> &dst,
+        uint32_t row, const AscendC::LocalTensor<half> &src)
+    {
+        auto base = dst[row * row_stride_];
+        AscendC::Cast(base, src, AscendC::RoundMode::CAST_NONE, d_);
+        if (row_stride_ > d_) {
+            auto zero_row = temp_buffer_.Get<float>();
+            AscendC::PipeBarrier<PIPE_V>();
+            AscendC::DataCopy(base[d_], zero_row, row_stride_ - d_);
+        }
+    }
+
     // ---- 段内最大值 -------------------------------------------------------
 
-    __aicore__ inline float ReduceToMaximum(uint32_t rows)
+    // 归约出已经装在 score_float_ 里的前 rows 行的最大值。
+    __aicore__ inline float ReduceLoadedMaximum(uint32_t rows)
     {
         auto score_float = score_float_buffer_.Get<float>();
         auto scalar = scalar_buffer_.Get<float>();
         auto work = reduce_work_buffer_.Get<float>();
-        AscendC::ReduceMax(scalar, score_float, work, rows);
-        AscendC::PipeBarrier<PIPE_V>();
-        return scalar.GetValue(0);
+        float maximum = -65504.0f;
+        for (uint32_t row = 0; row < rows; ++row) {
+            AscendC::ReduceMax(scalar, score_float[row * row_stride_], work,
+                static_cast<int32_t>(d_));
+            AscendC::PipeBarrier<PIPE_V>();
+            const float value = scalar.GetValue(0);
+            maximum = maximum > value ? maximum : value;
+        }
+        return maximum;
+    }
+
+    // 单个 chunk（<= kMaxLocalRows 行）的 score 最大值。
+    // 必须整块装完之后再归约：LoadScores 是按 chunk 把转换结果写进
+    // score_float_[base * row_stride_] 的，逐 chunk 归约会读到还没写入的行。
+    __aicore__ inline float ChunkMaximum(uint32_t begin, uint32_t rows)
+    {
+        LoadScores(begin, rows);
+        return ReduceLoadedMaximum(rows);
     }
 
     // ---- exp 分块 ---------------------------------------------------------
@@ -168,30 +221,36 @@ private:
     {
         auto score_float = score_float_buffer_.Get<float>();
         auto exp_tile = exp_tile_buffer_.Get<float>();
-        auto scalar = scalar_buffer_.Get<float>();
-        // 把 -maximum 铺满 scalar_buffer_ 的整行，再用一条带 repeat 的 Sub
-        // 把所有行一起平移：src1 的 repeat stride 为 0，等于把同一行广播给每一行。
-        AscendC::Duplicate(scalar, -maximum, kStrideUnit);
+        // 逐行平移 -maximum：score 每行只有 d_ 个有效元素，按 count 形式的
+        // Adds 处理，避免依赖 repeat stride 的字节/元素语义。
+        for (uint32_t row = 0; row < rows; ++row) {
+            AscendC::Adds(score_float[row * row_stride_], score_float[row * row_stride_],
+                -maximum, static_cast<int32_t>(d_));
+        }
         AscendC::PipeBarrier<PIPE_V>();
-        AscendC::Sub(score_float, score_float, scalar, static_cast<uint64_t>(d_),
-            static_cast<uint8_t>(rows), {1, 1, 1, kStrideUnit, kStrideUnit, 0});
-        AscendC::PipeBarrier<PIPE_V>();
-        // 整块 exp：输入输出同布局，原地安全；row_stride_ 是 64 的倍数，
-        // 所以多算出来的部分只落在各行自己的 padding 上。
-        AscendC::Exp(exp_tile, score_float, static_cast<int32_t>(rows * row_stride_));
+        // 逐行 exp，只覆盖有效列 [0, d_)；padding 由 CastPaddedRow /
+        // ZeroExpPadding 保证为 0。
+        for (uint32_t row = 0; row < rows; ++row) {
+            AscendC::Exp(exp_tile[row * row_stride_], score_float[row * row_stride_],
+                static_cast<int32_t>(d_));
+        }
         AscendC::PipeBarrier<PIPE_V>();
     }
 
-    // N = sum(exp_tile)；padding 已被补 0，可以整块求和。
+    // N = sum(exp_tile)。逐行归约后按行累加，padding 完全不参与。
     __aicore__ inline float TileExpSum(uint32_t rows)
     {
         auto exp_tile = exp_tile_buffer_.Get<float>();
         auto scalar = scalar_buffer_.Get<float>();
         auto work = reduce_work_buffer_.Get<float>();
-        AscendC::ReduceSum(scalar, exp_tile, work,
-            static_cast<int32_t>(rows * row_stride_));
-        AscendC::PipeBarrier<PIPE_V>();
-        return scalar.GetValue(0);
+        float total = 0.0f;
+        for (uint32_t row = 0; row < rows; ++row) {
+            AscendC::ReduceSum(scalar, exp_tile[row * row_stride_], work,
+                static_cast<int32_t>(d_));
+            AscendC::PipeBarrier<PIPE_V>();
+            total += scalar.GetValue(0);
+        }
+        return total;
     }
 
     // ---- 常驻路径 ---------------------------------------------------------
@@ -200,7 +259,7 @@ private:
     {
         LoadScores(begin, rows);
         LoadX(begin, rows);
-        const float maximum = ReduceToMaximum(rows);
+        const float maximum = ReduceLoadedMaximum(rows);
         BuildExpTile(rows, maximum);
         const float normalizer = TileExpSum(rows);
         ResetMeanAccumulators();
@@ -216,12 +275,11 @@ private:
 
     __aicore__ inline void ProcessStreaming(uint32_t segment, uint32_t begin, uint32_t rows)
     {
-        // 第一遍：段内最大值（tile 最大值沿段合并）。
+        // 第一遍：段内最大值（chunk 最大值沿段合并）。
         float maximum = -65504.0f;
         for (uint32_t base = 0; base < rows; base += kMaxLocalRows) {
             const uint32_t count = Minimum(kMaxLocalRows, rows - base);
-            LoadScores(begin + base, count);
-            const float tile_max = ReduceToMaximum(count);
+            const float tile_max = ChunkMaximum(begin + base, count);
             maximum = maximum > tile_max ? maximum : tile_max;
         }
 
@@ -336,8 +394,8 @@ private:
         AscendC::DataCopyPad(rstd_gm_[segment * d_], m2, {1, bytes, 0, 0});
 
         auto scalar = scalar_buffer_.Get<float>();
-        AscendC::Duplicate(scalar, normalizer, kStrideUnit);
-        AscendC::Ln(scalar, scalar, kStrideUnit);
+        AscendC::Duplicate(scalar, normalizer, kMaxD);
+        AscendC::Ln(scalar, scalar, kMaxD);
         AscendC::PipeBarrier<PIPE_V>();
         scalar.SetValue(0, scalar.GetValue(0) + maximum);
         AscendC::PipeBarrier<PIPE_ALL>();
@@ -366,8 +424,8 @@ private:
 
         const uint16_t bytes = static_cast<uint16_t>(d_ * sizeof(float));
         AscendC::DataCopyPad(mean_gm_[segment * d_], x_float, {1, bytes, 0, 0});
-        AscendC::Duplicate(scalar, epsilon_, kStrideUnit);
-        AscendC::Rsqrt(scalar, scalar, kStrideUnit);
+        AscendC::Duplicate(scalar, epsilon_, kMaxD);
+        AscendC::Rsqrt(scalar, scalar, kMaxD);
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::DataCopyPad(rstd_gm_[segment * d_], scalar, {1, bytes, 0, 0});
         AscendC::PipeBarrier<PIPE_ALL>();

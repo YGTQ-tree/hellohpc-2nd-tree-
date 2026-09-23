@@ -124,6 +124,12 @@ class DoubleSingleVector:
         self.value = total
         self.error = (self.error + error).astype(F32)
 
+    def normalized(self) -> "DoubleSingleVector":
+        """Renormalise so |error| <= ulp(value)/2 (Dekker's quick TwoSum)."""
+        total = (self.value + self.error).astype(F32)
+        error = ((self.value - total).astype(F32) + self.error).astype(F32)
+        return DoubleSingleVector(total, error)
+
     def subtract(self, other: "DoubleSingleVector") -> "DoubleSingleVector":
         total = (self.value - other.value).astype(F32)
         b_virtual = (total - self.value).astype(F32)
@@ -132,6 +138,12 @@ class DoubleSingleVector:
                   (self.value - a_virtual).astype(F32)).astype(F32) +
                  self.error - other.error).astype(F32)
         return DoubleSingleVector(total, error)
+
+    def scaled_pair(self, factor: "DoubleSingleVector") -> "DoubleSingleVector":
+        """Multiply by a two-float scalar, keeping the exact product split."""
+        high = self.scaled(factor.value)
+        low = (factor.error * self.value).astype(F32)
+        return DoubleSingleVector(high.value, (high.error + low).astype(F32))
 
     def scaled(self, factor: float) -> "DoubleSingleVector":
         """Multiply by a float32 scalar, keeping the exact product split."""
@@ -180,44 +192,71 @@ def _tile_statistics(seg_x, weights, base, stop, d):
     return tile_mean, tile_weight
 
 
+def _segment_mean(seg_x, weights, rows, d):
+    """Weighted mean via a two-float online update, rounded once at the end.
+
+    mean += (w_i/W_i) * (x_i - mean) is exact in real arithmetic, and its step is
+    a deviation from the running mean, so no intermediate ever has to resolve
+    digits finer than the mean itself.  Holding the running mean as a float32
+    pair (value + error) keeps the accumulated rounding far below one float32
+    ulp; the pair is rounded exactly once, at the end.
+
+    That single rounding matters: in the low-mass-tail fixture the mean moves
+    from 65504 to 0.145 on the very last row, so rounding earlier would quantise
+    the result onto 65504's 0.0039 grid - the entire error budget.
+    """
+    mean = DoubleSingleVector(np.zeros(d, dtype=F32))
+    total_weight = DoubleSingle(1)
+    started = False
+    for row in range(rows):
+        step_weight = float(weights[row])
+        if step_weight <= 0.0:
+            continue
+        if not started:
+            mean = DoubleSingleVector(seg_x[row])
+            total_weight = DoubleSingle(1)
+            total_weight.value[0] = F32(step_weight)
+            started = True
+            continue
+        running = float(total_weight.value[0] + total_weight.error[0])
+        weight_after = float(F32(running + F32(step_weight)))
+        quotient = F32(step_weight / weight_after)
+        # Split the ratio with an exact product so its residual is captured:
+        # rounding the ratio alone would put a 6e-8 relative error onto a step
+        # of magnitude ~65504, i.e. 0.023 absolute.
+        splitter = F32(4097.0)
+        a_big = (splitter * quotient).astype(F32)
+        a_hi = (a_big - (a_big - quotient)).astype(F32)
+        a_lo = (quotient - a_hi).astype(F32)
+        b_big = (splitter * F32(weight_after)).astype(F32)
+        b_hi = (b_big - (b_big - F32(weight_after))).astype(F32)
+        b_lo = (F32(weight_after) - b_hi).astype(F32)
+        product = (quotient * F32(weight_after)).astype(F32)
+        ratio_error = ((((a_hi * b_hi).astype(F32) - product).astype(F32) +
+                        (a_hi * b_lo).astype(F32) + (a_lo * b_hi).astype(F32) +
+                        (a_lo * b_lo).astype(F32)).astype(F32))
+        ratio = DoubleSingleVector(quotient,
+                                   (ratio_error + (step_weight - product).astype(F32)).astype(F32))
+        step = DoubleSingleVector(seg_x[row]).subtract(mean).scaled_pair(ratio)
+        mean.add(step.value, step.error)
+        mean = mean.normalized()
+        total_weight.add(F32(step_weight))
+    if not started:
+        return mean, 0.0
+    return mean, float(total_weight.value[0] + total_weight.error[0])
+
+
 def _segment_moments(seg_score: np.ndarray, seg_x: np.ndarray, epsilon: F32):
     d = seg_x.shape[1]
     rows = seg_x.shape[0]
     maximum = F32(np.max(seg_score))
     weights = np.exp((seg_score - maximum).astype(F32)).astype(F32)
 
-    # Pass 1 - the mean.
-    #   Level 1 reduces each tile to its own weighted mean (a short, well
-    #   conditioned reduction).  Level 2 applies the exact online weighted-mean
-    #   update, whose step is a deviation between two means of the same scale.
-    #   Summing w*x for the whole segment first would need ~11 significant
-    #   digits to land the mean on the right float32, and float32 has ~7.
-    tile_means = []
-    tile_weights = []
-    for base, stop in _tiles(rows, K_MAX_LOCAL_ROWS):
-        tile_mean, tile_weight = _tile_statistics(seg_x, weights, base, stop, d)
-        if tile_weight <= 0.0:
-            continue
-        tile_means.append(tile_mean)
-        tile_weights.append(tile_weight)
+    mean_pair, weight_sum = _segment_mean(seg_x, weights, rows, d)
+    mean_value = mean_pair.combined
 
-    total_weight = DoubleSingle(1)
-    for tile_weight in tile_weights:
-        total_weight.add(F32(tile_weight))
-    weight_sum = float(total_weight.value[0] + total_weight.error[0])
-
-    mean = DoubleSingleVector(tile_means[0].value, tile_means[0].error)
-    running_weight = tile_weights[0]
-    for index in range(1, len(tile_means)):
-        weight_after = float(F32(running_weight + F32(tile_weights[index])))
-        delta = tile_means[index].subtract(mean)
-        step = delta.scaled(tile_weights[index] / weight_after)
-        mean.add(step.value, step.error)
-        running_weight = weight_after
-    mean_value = mean.combined
-
-    # Pass 2 - the centred second moment.  Centring on the final float32 mean
-    # keeps the terms at the scale of the variance, so no cancellation occurs.
+    # Centred second moment: centring on the final float32 mean keeps every term
+    # at the scale of the variance, so nothing cancels.
     second = DoubleSingleVector(np.zeros(d, dtype=F32))
     for base, stop in _tiles(rows, K_MAX_LOCAL_ROWS):
         chunk = DoubleSingleVector(np.zeros(d, dtype=F32))
@@ -226,7 +265,7 @@ def _segment_moments(seg_score: np.ndarray, seg_x: np.ndarray, epsilon: F32):
             chunk.add(((diff * diff).astype(F32) * weights[row]).astype(F32))
         second.add(chunk.value, chunk.error)
 
-    var = ((second.combined) / weight_sum).astype(F32)
+    var = (second.combined / weight_sum).astype(F32)
     var = np.maximum(var, F32(0.0)).astype(F32)
     rstd = (1.0 / np.sqrt((var + epsilon).astype(F32))).astype(F32)
     lse = F32(float(np.log(np.float64(weight_sum))) + float(maximum))
