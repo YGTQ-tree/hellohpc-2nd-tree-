@@ -185,7 +185,7 @@ class Policy:
                 key=lambda item: (
                     self._criticality.get(item.task_type, 0.0),
                     -feasible_count.get(item.task_id, 0),
-                    -item.failed_attempts,
+                    item.failed_attempts + item.interrupted_attempts,
                 ),
             )
             task_type = self._types[task.task_type]

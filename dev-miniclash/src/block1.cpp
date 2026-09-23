@@ -1,3 +1,5 @@
+#include <iostream>
+#include <vector>
 #include "main.hpp"
 
 
@@ -15,23 +17,23 @@ void find_block1(uint32 block[], const uint32 IV[])
 	{
 		uint32 IV2[4] = { IV[0]+(1<<31), IV[1]+(1<<31)+(1<<25), IV[2]+(1<<31)+(1<<25), IV[3]+(1<<31)+(1<<25) };
 		if ((IV[1]&(1<<6))!=0 && (IV[1]&1)!=0) {
-			TRACE_CHAR('1');
+			std::cout << "S11" << std::flush;
 			find_block1_stevens_11(block, IV2);
 		} else if ((IV[1]&(1<<6))!=0 && (IV[1]&1)==0) {
-			TRACE_CHAR('2');
+			std::cout << "S10" << std::flush;
 			find_block1_stevens_10(block, IV2);
 		} else if ((IV[1]&(1<<6))==0 && (IV[1]&1)!=0) {
-			TRACE_CHAR('3');
+			std::cout << "S01" << std::flush;
 			find_block1_stevens_01(block, IV2);
 		} else {
-			TRACE_CHAR('0');
+			std::cout << "S00" << std::flush;
 			find_block1_stevens_00(block, IV2);
 		}
 		block[4] += 1<<31;
 		block[11] += 1<<15;
 		block[14] += 1<<31;
 	} else {
-		TRACE_CHAR('W');
+		std::cout << "W" << std::flush;
 		find_block1_wang(block, IV);
 	}
 }

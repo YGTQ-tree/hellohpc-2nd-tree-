@@ -115,7 +115,7 @@ std::array<std::array<std::array<std::array<float, 12>, 14>, 4>, 4> cal_round_en
 
   std::array<std::array<std::array<std::array<float, 12>, 14>, 4>, 4> round_end_pt_exp = {};
 #pragma omp parallel
-#pragma omp for
+#pragma omp for collapse(2)
   for (int pid1 = 0; pid1 < 4; pid1++) {
     for (int pid2 = 0; pid2 < 4; pid2++) {
       for (int han = 1; han <= 13; han++) {
@@ -372,6 +372,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
   const Open_Meld_Vector &current_open_meld = game_state.player_state[my_pid].open_meld;
   const bool current_riichi = game_state.player_state[my_pid].riichi_declared;
   const Event &current_action = game_record[game_record.size() - 1];
+  const int tsumo_num_all = count_tsumo_num_all(game_record);
   assert_with_out(
       current_action.type == EventType::DRAW ||
           (current_action.type == EventType::DISCARD && current_action.player != my_pid) ||
@@ -722,7 +723,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
               for (int an = win_loc[1]; an < win_loc[2]; an++) {
                 const Win_Calc &win = hand_calculator_work.win_graph_work[win_loc[0]][an];
                 if (tile_kind(current_tile) == win.win_info.get_tile()) {
-                  const int last_draw_han = (count_tsumo_num_all(game_record) == 70 ? 1 : 0);
+                  const int last_draw_han = (tsumo_num_all == 70 ? 1 : 0);
                   if (win.win_info.get_han_tsumo() + last_draw_han > 0) {
                     tsumo_win_choice.action_type = AT_TSUMO_WIN;
                     const std::array<double, 4> points_exp = win.get_points_exp(
@@ -750,7 +751,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
 
             tile_choice.push_back(tile_choice_tmp);
 
-            if (count_tsumo_num_all(game_record) < 70) {
+            if (tsumo_num_all < 70) {
               const std::array<int, 3> &tsumo_edge_loc =
                   hand_calculator_work.get_const_tsumo_edge_loc(cn, gn);
               for (int acn = tsumo_edge_loc[1]; acn < tsumo_edge_loc[2]; acn++) {
@@ -836,7 +837,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
             same_turn_furiten = true;
           }
           if (tile_kind(current_tile) == win.win_info.get_tile()) {
-            const int incident_han = (count_tsumo_num_all(game_record) == 70 ? 1 : 0) +
+            const int incident_han = (tsumo_num_all == 70 ? 1 : 0) +
                                      (current_action.type == EventType::UPGRADED_KAN ? 1 : 0);
             if (win.win_info.get_han_ron() || 0 < incident_han) {
               open_meld_choice_tmp.open_meld_action_type = AT_RON_WIN;
@@ -870,7 +871,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
       open_meld_choice.push_back(open_meld_choice_tmp);
 
       if (current_action.type == EventType::DISCARD &&
-          count_tsumo_num_all(game_record) < 70) {  // This prevents an open meld on the last draw.
+          tsumo_num_all < 70) {  // This prevents an open meld on the last draw.
         const std::array<int, 3> &open_meld_edge_loc =
             hand_calculator_work.get_const_open_meld_edge_loc(cn_open_meld_neg, gn_open_meld_neg);
         for (int acn = open_meld_edge_loc[1]; acn < open_meld_edge_loc[2]; acn++) {
@@ -997,7 +998,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
                 passive_drawn_round_prob, tsumo_num_exp, tactics);
             tile_choice.push_back(tile_choice_tmp);
 
-            if (count_tsumo_num_all(game_record) < 70) {
+            if (tsumo_num_all < 70) {
               const std::array<int, 3> &tsumo_edge_loc =
                   hand_calculator_work.get_const_tsumo_edge_loc(cn, gn);
               for (int acn = tsumo_edge_loc[1]; acn < tsumo_edge_loc[2]; acn++) {
@@ -1110,7 +1111,7 @@ void Selector::set_selector(const Moves &game_record, const int my_pid, const Ta
       open_meld_choice.push_back(pass_choice);
 
       if (current_action.type == EventType::DISCARD &&
-          count_tsumo_num_all(game_record) < 70) {  // This prevents an open meld on the last draw.
+          tsumo_num_all < 70) {  // This prevents an open meld on the last draw.
         const std::array<int, 3> &open_meld_edge_loc =
             hand_calculator_work.get_const_open_meld_edge_loc(cn_open_meld_neg, gn_open_meld_neg);
         for (int acn = open_meld_edge_loc[1]; acn < open_meld_edge_loc[2]; acn++) {

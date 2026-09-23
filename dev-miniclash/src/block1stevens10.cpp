@@ -2,38 +2,38 @@
 #include <vector>
 #include "main.hpp"
 
-void find_block1_stevens_11(uint32 block[], const uint32 IV[])
+void find_block1_stevens_10(uint32 block[], const uint32 IV[])
 {
 	uint32 Q[68] = { IV[0], IV[3], IV[2], IV[1] };
 
-	std::vector<uint32> q9q10mask(1<<5);
+	std::vector<uint32> q9q10mask(1<<4);
 	for (unsigned k = 0; k < q9q10mask.size(); ++k)
-		q9q10mask[k] = ((k<<5) ^ (k<<6) ^ (k<<7) ^ (k<<24) ^ (k<<27)) & 0x880002a0;
+		q9q10mask[k] = ((k<<2) ^ (k<<8) ^ (k<<11) ^ (k<<25)) & 0x08004204;
 	
-	std::vector<uint32> q9mask(1<<9);
+	std::vector<uint32> q9mask(1<<10);
 	for (unsigned k = 0; k < q9mask.size(); ++k)
-		q9mask[k] = ((k<<1) ^ (k<<3) ^ (k<<8) ^ (k<<12) ^ (k<<15) ^ (k<<18)) & 0x04710c12;
+		q9mask[k] = ((k<<1) ^ (k<<2) ^ (k<<3) ^ (k<<7) ^ (k<<12) ^ (k<<15) ^ (k<<18) ^ (k<<20)) & 0x2471042a;
 	
 	while (true) 
 	{
 		uint32 aa = Q[Qoff] & 0x80000000;
 
-		Q[Qoff + 2] = (xrng64() & 0x75bef63e) | 0x0a410041 | aa;
-		Q[Qoff + 3] = (xrng64() & 0x10345614) | 0x0202a9e1 | (Q[Qoff + 2] & 0x84000002);
-		Q[Qoff + 4] = (xrng64() & 0x00145400) | 0xe84ba909 | (Q[Qoff + 3] & 0x00000014);
-		Q[Qoff + 5] = (xrng64() & 0x80000000) | 0x75e90b1d | (Q[Qoff + 4] & 0x00145400);
-		Q[Qoff + 6] = 0x7c23ff5a | (Q[Qoff + 5] & 0x80000000);
-		Q[Qoff + 7] = (xrng64() & 0x40000880) | 0x114bf41a;
-		Q[Qoff + 8] = (xrng64() & 0x00002090) | 0xb352dd01;
-		Q[Qoff + 9] = (xrng64() & 0x00044000) | 0x7a803124;
-		Q[Qoff +10] = (xrng64() & 0x00002000) | 0xf28a92c9 | (Q[Qoff + 9] & 0x00044000);
-		Q[Qoff +11] = (xrng64() & 0x128a8108) | 0xc5710ed7 | (Q[Qoff + 10] & 0x00002000);
-		Q[Qoff +12] = (xrng64() & 0x9edb8d7f) | 0x20003080 | (~Q[Qoff + 11] & 0x00200000);
-		Q[Qoff +13] = (xrng64() & 0x3efb1d77) | 0x4004c008 | (Q[Qoff + 12] & 0x80000000);
-		Q[Qoff +14] = (xrng64() & 0x1fff5d77) | 0x0000a288;
-		Q[Qoff +15] = (xrng64() & 0x1efe7ff7) | 0x20008000 | (~Q[Qoff + 14] & 0x00010000);
-		Q[Qoff +16] = (xrng64() & 0x1ffdffff) | 0x20000000 | (~Q[Qoff + 15] & 0x40020000);
-		
+		Q[Qoff + 2] = (xrng64() & 0x79b0c6ba) | 0x024c3841 | aa;
+		Q[Qoff + 3] = (xrng64() & 0x19300210) | 0x2603096d | (Q[Qoff + 2] & 0x80000082);
+		Q[Qoff + 4] = (xrng64() & 0x10300000) | 0xe4cae30c | (Q[Qoff + 3] & 0x01000030);
+		Q[Qoff + 5] = (xrng64() & 0x10000000) | 0x63494061 | (Q[Qoff + 4] & 0x00300000);
+		Q[Qoff + 6] = 0x7deaff68;
+		Q[Qoff + 7] = (xrng64() & 0x20444000) | 0x09091ee0;
+		Q[Qoff + 8] = (xrng64() & 0x09040000) | 0xb2529f6d;
+		Q[Qoff + 9] = (xrng64() & 0x00040000) | 0x10885184;
+		Q[Qoff + 10] = (xrng64() & 0x00000080) | 0x428afb11 | (Q[Qoff + 9] & 0x00040000);
+		Q[Qoff + 11] = (xrng64() & 0x128a8110) | 0x6571266b | (Q[Qoff + 10] & 0x0000080);
+		Q[Qoff + 12] = (xrng64() & 0x3ef38d7f) | 0x00003080 | (~Q[Qoff + 11] & 0x00080000);
+		Q[Qoff + 13] = (xrng64() & 0x3efb1d77) | 0x0004c008;
+		Q[Qoff + 14] = (xrng64() & 0x5fff5d77) | 0x8000a288;
+		Q[Qoff + 15] = (xrng64() & 0x1efe7ff7) | 0xe0008000 | (~Q[Qoff + 14] & 0x00010000);
+		Q[Qoff + 16] = (xrng64() & 0x5ffdffff) | 0x20000000 | (~Q[Qoff + 15] & 0x00020000);
+
 		MD5_REVERSE_STEP(5, 0x4787c62a, 12);
 		MD5_REVERSE_STEP(6, 0xa8304613, 17);
 		MD5_REVERSE_STEP(7, 0xfd469501, 22);
@@ -48,21 +48,21 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 		const uint32 tt0 = FF(Q[Qoff + 0], Q[Qoff - 1], Q[Qoff - 2]) + Q[Qoff - 3] + 0xd76aa478;
 		const uint32 tt1 = Q[Qoff - 2] + 0xe8c7b756;		
 
-		const uint32 q1a = 0x02000861 ^ (Q[Qoff + 0] & 0x80000020);
+		const uint32 q1a = 0x02000941 ^ (Q[Qoff + 0] & 0x80000000);
 		
 		unsigned counter = 0;
 		while (counter < (1 << 12))
 		{
 			++counter;
 
-			uint32 q1 = q1a | (xrng64() & 0x7dfff79e);
+			uint32 q1 = q1a | (xrng64() & 0x7dfdf6be);
 			uint32 m1 = Q[Qoff+2] - q1;
 			m1 = RR(m1, 12) - FF(q1, Q[Qoff+0], Q[Qoff-1]) - tt1;
 
 			const uint32 q16 = Q[Qoff+16];
 			uint32 q17 = tt17 + m1;
 			q17 = RL(q17, 5) + q16;
-			if (0x40000000 != ((q17^q16) & 0xc0008008)) continue;
+			if (0x80000000 != ((q17^q16) & 0x80008008)) continue;
 			if (0 != (q17 & 0x00020000)) continue;
 
 			uint32 q18 = GG(q17, q16, Q[Qoff+15]) + tt18;
@@ -71,7 +71,7 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 
 			uint32 q19 = GG(q18, q17, q16) + tt19;
 			q19 = RL(q19, 14); q19 += q18;
-			if (0x80000000 != (q19 & 0x80020000)) continue;
+			if (0 != (q19 & 0x80020000)) continue;
 
 			uint32 m0 = q1 - Q[Qoff + 0];
 			m0 = RR(m0, 7) - tt0;
@@ -93,7 +93,6 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 			uint32 q21 = GG(Q[Qoff+20], Q[Qoff+19], Q[Qoff+18]) + Q[Qoff+17] + 0xd62f105d + block[5];
 			q21 = RL(q21, 5); q21 += Q[Qoff+20];
 			if (0 != ((q21^Q[Qoff+20]) & 0x80020000)) continue;
-
 			Q[Qoff+21] = q21;
 
 			counter = 0;
@@ -104,7 +103,7 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 
 		const uint32 q9b = Q[Qoff + 9];
 		const uint32 q10b = Q[Qoff + 10];
-
+	
 		MD5_REVERSE_STEP(2, 0x242070db, 17);
 		MD5_REVERSE_STEP(3, 0xc1bdceee, 22);
 		MD5_REVERSE_STEP(4, 0xf57c0faf, 7);
@@ -115,17 +114,17 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 		const uint32 tt23 = Q[Qoff + 19] + 0xd8a1e681 + block[15];
 		const uint32 tt24 = Q[Qoff + 20] + 0xe7d3fbc8 + block[4];
 	 
-		for (unsigned k10 = 0; k10 < (1<<5); ++k10)
+		for (unsigned k10 = 0; k10 < (1<<4); ++k10)
 		{
-			uint32 q10 = q10b | (q9q10mask[k10]&0x08000040);
+			uint32 q10 = q10b | (q9q10mask[k10]&0x08000004);
 			uint32 m10 = RR(Q[Qoff+11]-q10,17);
-			uint32 q9 = q9b | (q9q10mask[k10]&0x80000280);
+			uint32 q9 = q9b | (q9q10mask[k10]&0x00004200);
 
 			m10 -= FF(q10, q9, Q[Qoff+8]) + tt10;
 
 			uint32 aa = Q[Qoff + 21];
 			uint32 dd = tt22+m10; dd = RL(dd, 9) + aa;
-			if (0 == (dd & 0x80000000)) continue;			
+			if (0 != (dd & 0x80000000)) continue;			
 
 			uint32 bb = Q[Qoff + 20];
 			uint32 cc = tt23 + GG(dd, aa, bb); 
@@ -141,7 +140,7 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 			Q[Qoff + 10] = q10;
 			MD5_REVERSE_STEP(13, 0xfd987193, 12);
 
-			for (unsigned k9 = 0; k9 < (1<<9); ++k9)
+			for (unsigned k9 = 0; k9 < (1<<10); ++k9)
 			{
 				uint32 a = aa, b = bb, c = cc, d = dd;
 				Q[Qoff + 9] = q9 ^ q9mask[k9];
@@ -213,7 +212,7 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 				if (0 != ((a^c) >> 31)) continue;
 				MD5_STEP(II, b, c, d, a, block[9], 0xeb86d391, 21);
 
-				TRACE_CHAR('.');
+				std::cout << "." << std::flush;
 
 				uint32 block2[16];
 				uint32 IV1[4], IV2[4];
@@ -237,7 +236,7 @@ void find_block1_stevens_11(uint32 block[], const uint32 IV[])
 				if (IV2[0]==IV1[0] && IV2[1]==IV1[1] && IV2[2]==IV1[2] && IV2[3]==IV1[3])
 					return;
 				if (IV2[0] != IV1[0])
-						TRACE_CHAR('!');
+						std::cout << "!" << std::flush;
 			}
 		}
 	}

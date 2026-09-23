@@ -3,14 +3,10 @@ name: cpu-hpc-skill
 description: Optimize the selected single-threaded ARM CPU kernel within the public rules.
 ---
 
-# Bitmatrix Plan
+# Bitmatrix plan
 
-Optimize only `bitmatrix`. Read `TASK.md`, `kernel.h`, and the starter. Do not inspect `spec.yaml`, evaluator, runner, tests, or references. Edit only `kernel.cpp` and `compile_options.txt`.
+Optimize only `bitmatrix`. Read `TASK.md`, `kernel.h`, and starter; edit only `kernel.cpp` and `compile_options.txt`. First run `bash tools/test_candidate.sh` and record per-case times. Preserve ABI, exact `uint32_t` counts, full output writes, and single-thread execution; do not use processes, libraries, input-specific shortcuts, or output reuse.
 
-First run `bash tools/test_candidate.sh`; record correctness and per-case times. Preserve the ABI, exact `uint32_t` counts, and overwrite every output. Use one thread; no processes, external compute libraries, input-dependent shortcuts, or runtime output reuse.
+The row-major matrix stores 64 columns per word. Replace repeated per-column row tests with per-word bit-sliced counters: keep 14 zeroed 64-bit planes (counts up to 8192); for each selected row word, add all 64 bits using XOR and AND carry propagation, then reconstruct column counts. Iterate set bits of each mask word to skip unselected rows. Check zero, all-selected, and 8192-row cases.
 
-Exploit row-major 64-bit words. Maintain 14 zeroed bit planes per matrix word (up to 8192 selected rows). For each selected row, load each word and add its 64 column bits to the planes with XOR and AND carry propagation. Then reconstruct each column count from its plane bits. Check the 8192-row boundary and all-zero/all-one masks. This replaces repeated per-column row tests with one pass over selected words.
-
-Make one change at a time. After each change run `bash tools/test_candidate.sh`; profile only correct candidates with `bash tools/profile.sh`, then compare with `bash tools/bench.sh`. Use `bash tools/vec_report.sh` when it can explain a measured result. Try ARM-native compiler flags only after a correct baseline; reject flags that fail correctness or regress timing.
-
-Keep the fastest fully correct kernel and its matching flags. In the final four rounds, stop exploring: restore that pair and run `bash tools/test_candidate.sh` once more. Leave those verified files in place.
+Change one thing at a time; test after every edit. Profile only correct candidates, then benchmark; use the vectorization report to explain results. Try ARM flags only after the algorithm is correct. Keep the fastest correct source/flags pair. In the final four rounds, stop exploring, restore that pair, and test it again.

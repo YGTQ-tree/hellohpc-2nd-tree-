@@ -231,7 +231,7 @@ void find_block1_wang(uint32 block[], const uint32 IV[])
 					if (0 != ((a^c) >> 31)) continue;
 					MD5_STEP(II, b, c, d, a, block[9], 0xeb86d391, 21);
 
-					TRACE_CHAR('.');
+					std::cout << "." << std::flush;
 
 					uint32 block2[16];
 					uint32 IV1[4], IV2[4];
@@ -256,7 +256,7 @@ void find_block1_wang(uint32 block[], const uint32 IV[])
 						return;
 
 					if (IV2[0] != IV1[0])
-						TRACE_CHAR('!');
+						std::cout << "!" << std::flush;
 				}
 			}
 		}

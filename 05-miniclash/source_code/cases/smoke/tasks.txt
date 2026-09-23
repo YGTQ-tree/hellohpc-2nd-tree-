@@ -1,0 +1,4 @@
+cases/smoke/in0000.bin cases/smoke/out0000_1.bin cases/smoke/out0000_2.bin
+cases/smoke/in0001.bin cases/smoke/out0001_1.bin cases/smoke/out0001_2.bin
+cases/smoke/in0002.bin cases/smoke/out0002_1.bin cases/smoke/out0002_2.bin
+cases/smoke/in0003.bin cases/smoke/out0003_1.bin cases/smoke/out0003_2.bin

@@ -156,7 +156,7 @@ private:
         auto score_float = score_float_buffer_.Get<float>();
         auto scalar = scalar_buffer_.Get<float>();
         auto work = reduce_work_buffer_.Get<float>();
-        AscendC::ReduceMax(scalar, score_float, work, rows, false);
+        AscendC::ReduceMax(scalar, score_float, work, rows);
         AscendC::PipeBarrier<PIPE_V>();
         return scalar.GetValue(0);
     }
@@ -168,7 +168,12 @@ private:
     {
         auto score_float = score_float_buffer_.Get<float>();
         auto exp_tile = exp_tile_buffer_.Get<float>();
-        AscendC::Adds(score_float, score_float, -maximum, static_cast<uint64_t>(d_),
+        auto scalar = scalar_buffer_.Get<float>();
+        // 把 -maximum 铺满 scalar_buffer_ 的整行，再用一条带 repeat 的 Sub
+        // 把所有行一起平移：src1 的 repeat stride 为 0，等于把同一行广播给每一行。
+        AscendC::Duplicate(scalar, -maximum, kStrideUnit);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(score_float, score_float, scalar, static_cast<uint64_t>(d_),
             static_cast<uint8_t>(rows), {1, 1, 1, kStrideUnit, kStrideUnit, 0});
         AscendC::PipeBarrier<PIPE_V>();
         // 整块 exp：输入输出同布局，原地安全；row_stride_ 是 64 的倍数，
@@ -184,7 +189,7 @@ private:
         auto scalar = scalar_buffer_.Get<float>();
         auto work = reduce_work_buffer_.Get<float>();
         AscendC::ReduceSum(scalar, exp_tile, work,
-            static_cast<int32_t>(rows * row_stride_), false);
+            static_cast<int32_t>(rows * row_stride_));
         AscendC::PipeBarrier<PIPE_V>();
         return scalar.GetValue(0);
     }

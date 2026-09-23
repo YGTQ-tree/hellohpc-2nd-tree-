@@ -211,7 +211,7 @@ void find_block1_stevens_00(uint32 block[], const uint32 IV[])
 				if (0 != ((a^c) >> 31)) continue;
 				MD5_STEP(II, b, c, d, a, block[9], 0xeb86d391, 21);
 
-				std::cout << "." << std::flush;
+				TRACE_CHAR('.');
 
 				uint32 block2[16];
 				uint32 IV1[4], IV2[4];
@@ -235,7 +235,7 @@ void find_block1_stevens_00(uint32 block[], const uint32 IV[])
 				if (IV2[0]==IV1[0] && IV2[1]==IV1[1] && IV2[2]==IV1[2] && IV2[3]==IV1[3])
 					return;
 				if (IV2[0] != IV1[0])
-						std::cout << "!" << std::flush;
+						TRACE_CHAR('!');
 			}
 		}
 	}

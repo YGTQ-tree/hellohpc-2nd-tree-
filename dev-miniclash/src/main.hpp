@@ -41,17 +41,3 @@ inline uint32 RR(uint32 x, unsigned int n)
 	block[t] = RR(block[t], RC) - FF(Q[Qoff + t], Q[Qoff + t - 1], Q[Qoff + t - 2]) - Q[Qoff + t - 3] - AC )
 
 #define Qoff 3
-
-// Progress tracing used to go straight to std::cout with an explicit flush,
-// which costs a write() syscall per emitted character on the hot search path.
-// Route every progress character through this macro instead:
-//   * HASHCLASH_TRACE defined   -> same behaviour as the original program
-//   * HASHCLASH_TRACE undefined -> the character is discarded, no I/O at all
-// The search itself never reads these characters, so the produced collisions
-// are byte-for-byte identical either way.
-#ifdef HASHCLASH_TRACE
-#include <iostream>
-#define TRACE_CHAR(c) (std::cout << (c) << std::flush)
-#else
-#define TRACE_CHAR(c) ((void)0)
-#endif
