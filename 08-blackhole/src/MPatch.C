@@ -8,6 +8,7 @@
 #include <cmath>
 #include <new>
 #include <vector>
+#include <cstring>
 using namespace std;
 
 #include "misc.h"
@@ -24,6 +25,7 @@ struct InterpGeometryCache
   int npoints;
   int order;
   int symmetry;
+  unsigned long long coordinate_hash;
   vector<double> coordinates;
   vector<Block *> owners;
   vector<int> bases;
@@ -466,15 +468,35 @@ void Patch::Interp_Points(MyList<var> *VarList,
   uub = new double[dim];
 
   static vector<InterpGeometryCache> geometry_cache;
+  static map<unsigned long long, vector<size_t> > geometry_lookup;
   int cache_index = -1;
   bool cache_hit = false;
   if (cache_geometry)
   {
-    for (size_t entry = 0; entry < geometry_cache.size(); entry++)
+    // Fingerprint a few fixed positions to find likely cache entries cheaply.
+    // The full coordinate comparison below still decides equality, so this
+    // shortcut cannot cause a cache collision to reuse another geometry.
+    unsigned long long coordinate_hash = 1469598103934665603ULL;
+    const int samples[3] = {0, NN / 2, NN - 1};
+    for (int sample = 0; sample < 3; sample++)
+      for (int i = 0; i < dim; i++)
+      {
+        unsigned char bytes[sizeof(double)];
+        memcpy(bytes, &XX[i][samples[sample]], sizeof(double));
+        for (size_t b = 0; b < sizeof(double); b++)
+        {
+          coordinate_hash ^= bytes[b];
+          coordinate_hash *= 1099511628211ULL;
+        }
+      }
+    vector<size_t> &candidates = geometry_lookup[coordinate_hash];
+    for (size_t candidate_index = 0; candidate_index < candidates.size(); candidate_index++)
     {
+      size_t entry = candidates[candidate_index];
       InterpGeometryCache &candidate = geometry_cache[entry];
       if (candidate.patch != this || candidate.npoints != NN ||
-          candidate.order != ordn || candidate.symmetry != Symmetry)
+          candidate.order != ordn || candidate.symmetry != Symmetry ||
+          candidate.coordinate_hash != coordinate_hash)
         continue;
       bool same = true;
       for (int j = 0; j < NN && same; j++)
@@ -498,6 +520,7 @@ void Patch::Interp_Points(MyList<var> *VarList,
       entry.npoints = NN;
       entry.order = ordn;
       entry.symmetry = Symmetry;
+      entry.coordinate_hash = coordinate_hash;
       entry.coordinates.resize(NN * dim);
       entry.owners.resize(NN, 0);
       entry.bases.resize(NN * dim, 0);
@@ -507,6 +530,7 @@ void Patch::Interp_Points(MyList<var> *VarList,
           entry.coordinates[j * dim + i] = XX[i][j];
       geometry_cache.push_back(entry);
       cache_index = static_cast<int>(geometry_cache.size()) - 1;
+      candidates.push_back(static_cast<size_t>(cache_index));
     }
   }
 
