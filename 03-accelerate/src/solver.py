@@ -112,16 +112,36 @@ static void kernel_arm(
             for (; q + 3 < qe; q += 4) {
                 float32x4_t r4 = vdupq_n_f32(0.0f);
                 float32x4_t p4 = vdupq_n_f32(0.0f);
-                #pragma GCC unroll 4
-                for (int d = 0; d < dimension; ++d) {
-                    const float32x4_t x4 = vld1q_f32(xt + (size_t)d * stride + q);
-                    const float32x4_t diff = vsubq_f32(x4, vdupq_n_f32(center[d]));
-                    r4 = vfmaq_f32(r4, diff, diff);
-                    p4 = vfmaq_f32(p4, x4, vdupq_n_f32(direction[d]));
+                float32x4_t r4a = vdupq_n_f32(0.0f);
+                float32x4_t p4a = vdupq_n_f32(0.0f);
+                float32x4_t r4b = vdupq_n_f32(0.0f);
+                float32x4_t p4b = vdupq_n_f32(0.0f);
+                float32x4_t r4c = vdupq_n_f32(0.0f);
+                float32x4_t p4c = vdupq_n_f32(0.0f);
+                int d = 0;
+                for (; d + 3 < dimension; d += 4) {
+                    const float32x4_t x0 = vld1q_f32(xt + (size_t)(d + 0) * stride + q);
+                    const float32x4_t x1 = vld1q_f32(xt + (size_t)(d + 1) * stride + q);
+                    const float32x4_t x2 = vld1q_f32(xt + (size_t)(d + 2) * stride + q);
+                    const float32x4_t x3 = vld1q_f32(xt + (size_t)(d + 3) * stride + q);
+                    const float32x4_t a0 = vsubq_f32(x0, vdupq_n_f32(center[d + 0]));
+                    const float32x4_t a1 = vsubq_f32(x1, vdupq_n_f32(center[d + 1]));
+                    const float32x4_t a2 = vsubq_f32(x2, vdupq_n_f32(center[d + 2]));
+                    const float32x4_t a3 = vsubq_f32(x3, vdupq_n_f32(center[d + 3]));
+                    r4 = vfmaq_f32(r4, a0, a0);
+                    p4 = vfmaq_f32(p4, x0, vdupq_n_f32(direction[d + 0]));
+                    r4a = vfmaq_f32(r4a, a1, a1);
+                    p4a = vfmaq_f32(p4a, x1, vdupq_n_f32(direction[d + 1]));
+                    r4b = vfmaq_f32(r4b, a2, a2);
+                    p4b = vfmaq_f32(p4b, x2, vdupq_n_f32(direction[d + 2]));
+                    r4c = vfmaq_f32(r4c, a3, a3);
+                    p4c = vfmaq_f32(p4c, x3, vdupq_n_f32(direction[d + 3]));
                 }
+                r4 = vaddq_f32(vaddq_f32(r4, r4a), vaddq_f32(r4b, r4c));
+                p4 = vaddq_f32(vaddq_f32(p4, p4a), vaddq_f32(p4b, p4c));
                 const float32x4_t g4 = exp4(vmulq_n_f32(r4, -s));
                 const float32x4_t h4 = sin4(vmulq_n_f32(p4, t));
-                const float32x4_t term4 = vfmaq_n_f32(vmulq_n_f32(g4, w), h4, b);
+                float32x4_t term4 = vfmaq_n_f32(vmulq_n_f32(g4, w), h4, b);
                 const float64x2_t tl = vcvt_f64_f32(vget_low_f32(term4));
                 const float64x2_t th = vcvt_f64_f32(vget_high_f32(term4));
                 const float64x2_t al = vld1q_f64(accum + q);
@@ -214,9 +234,6 @@ void compute_field_kernel(
     int dimension)
 {
 #if defined(__aarch64__)
-    /* The hand-written vector math is tuned for the D=16 workload.  The
-       D=32 formal case has wider phase ranges, so use libm there to retain
-       the reference numerical behavior. */
     if (dimension == 16) {
         kernel_arm(points, centers, weights, scales, bias, trig_scale, trig_vec,
                    output, q_count, c_count, dimension);
