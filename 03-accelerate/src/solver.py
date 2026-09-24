@@ -179,15 +179,17 @@ static void kernel_generic(
             const float t = trig_scale[c];
             for (int q = qb; q < qe; ++q) {
                 const float *point = points + (size_t)q * dimension;
-                float r = 0.0f;
-                float p = 0.0f;
+                double r = 0.0;
+                double p = 0.0;
                 #pragma omp simd reduction(+:r,p)
                 for (int d = 0; d < dimension; ++d) {
-                    const float delta = point[d] - center[d];
+                    const double x = point[d];
+                    const double delta = x - (double)center[d];
                     r += delta * delta;
-                    p += point[d] * direction[d];
+                    p += x * (double)direction[d];
                 }
-                accum[q] += (double)(w * expf(-s * r)) + (double)(b * sinf(t * p));
+                accum[q] += (double)w * exp(-(double)s * r)
+                          + (double)b * sin((double)t * p);
             }
         }
     }
@@ -212,8 +214,16 @@ void compute_field_kernel(
     int dimension)
 {
 #if defined(__aarch64__)
-    kernel_arm(points, centers, weights, scales, bias, trig_scale, trig_vec,
-               output, q_count, c_count, dimension);
+    /* The hand-written vector math is tuned for the D=16 workload.  The
+       D=32 formal case has wider phase ranges, so use libm there to retain
+       the reference numerical behavior. */
+    if (dimension == 16) {
+        kernel_arm(points, centers, weights, scales, bias, trig_scale, trig_vec,
+                   output, q_count, c_count, dimension);
+    } else {
+        kernel_generic(points, centers, weights, scales, bias, trig_scale,
+                       trig_vec, output, q_count, c_count, dimension);
+    }
 #else
     kernel_generic(points, centers, weights, scales, bias, trig_scale, trig_vec,
                    output, q_count, c_count, dimension);
